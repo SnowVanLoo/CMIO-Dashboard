@@ -2,3 +2,4 @@ streamlit
 plotly
 pandas
 snowflake-snowpark-python
+snowflake-connector-python

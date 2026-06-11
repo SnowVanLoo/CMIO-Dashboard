@@ -22,23 +22,40 @@ if OFFLINE_MODE:
     IS_SIS = False
     session = None
 else:
+    session = None
+    IS_SIS = False
     try:
         session = st.connection("snowflake").session()
         IS_SIS = True
     except Exception:
+        pass
+    if session is None:
         try:
             from snowflake.snowpark.context import get_active_session
             session = get_active_session()
             IS_SIS = True
         except Exception:
+            pass
+    if session is None:
+        try:
             from snowflake.snowpark import Session
             conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowflake")
             session = Session.builder.config("connection_name", conn_name).create()
             IS_SIS = False
+        except Exception:
+            session = None
+            IS_SIS = False
 
-if not IS_SIS and not OFFLINE_MODE:
-    session.sql("USE ROLE SALES_ENGINEER").collect()
-    session.sql("USE WAREHOUSE SNOWADHOC").collect()
+if not IS_SIS and not OFFLINE_MODE and session is not None:
+    try:
+        session.sql("USE ROLE SALES_ENGINEER").collect()
+        session.sql("USE WAREHOUSE SNOWADHOC").collect()
+    except Exception:
+        pass
+
+if session is None and not OFFLINE_MODE:
+    st.error("⚠️ No Snowflake connection. To run on Streamlit Cloud, add Snowflake credentials to **Settings → Secrets**.")
+    st.stop()
 
 HEALTH_SYSTEM = {
     "name": "MetroHealth Alliance", "hospitals": 12, "clinics": 115,
