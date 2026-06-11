@@ -23,14 +23,18 @@ if OFFLINE_MODE:
     session = None
 else:
     try:
-        from snowflake.snowpark.context import get_active_session
-        session = get_active_session()
+        session = st.connection("snowflake").session()
         IS_SIS = True
     except Exception:
-        from snowflake.snowpark import Session
-        conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowflake")
-        session = Session.builder.config("connection_name", conn_name).create()
-        IS_SIS = False
+        try:
+            from snowflake.snowpark.context import get_active_session
+            session = get_active_session()
+            IS_SIS = True
+        except Exception:
+            from snowflake.snowpark import Session
+            conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowflake")
+            session = Session.builder.config("connection_name", conn_name).create()
+            IS_SIS = False
 
 if not IS_SIS and not OFFLINE_MODE:
     session.sql("USE ROLE SALES_ENGINEER").collect()
