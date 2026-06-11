@@ -4,72 +4,19 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-import os, pathlib
 
-SCHEMA = "TEMP.TVANLOO_CMIO_COMMAND_CENTER"
-OFFLINE_MODE = os.getenv("OFFLINE_MODE", "false").lower() == "true"
-DATA_DIR = pathlib.Path(__file__).parent / "data"
-
-if OFFLINE_MODE:
-    import duckdb
-    _duck = duckdb.connect()
-    for _tbl in ["FACILITIES","DEPARTMENTS","PROVIDERS","EHR_DAILY_USAGE",
-                 "CLINICAL_OUTCOMES","TRAINING_LMS","SUPPORT_TICKETS",
-                 "SYSTEM_DOWNTIME","VBC_METRICS","PAYER_CLAIMS","SDOH_POPULATION"]:
-        pf = DATA_DIR / f"{_tbl}.parquet"
-        if pf.exists():
-            _duck.execute(f"CREATE OR REPLACE TABLE {_tbl} AS SELECT * FROM read_parquet('{pf}')")
-    IS_SIS = False
-    session = None
-else:
-    session = None
-    IS_SIS = False
-    try:
-        session = st.connection("snowflake").session()
-        IS_SIS = True
-    except Exception:
-        pass
-    if session is None:
-        try:
-            from snowflake.snowpark.context import get_active_session
-            session = get_active_session()
-            IS_SIS = True
-        except Exception:
-            pass
-    if session is None:
-        try:
-            from snowflake.snowpark import Session
-            conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "Snowflake")
-            session = Session.builder.config("connection_name", conn_name).create()
-            IS_SIS = False
-        except Exception:
-            session = None
-            IS_SIS = False
-
-if not IS_SIS and not OFFLINE_MODE and session is not None:
-    try:
-        session.sql("USE ROLE SALES_ENGINEER").collect()
-        session.sql("USE WAREHOUSE SNOWADHOC").collect()
-    except Exception:
-        pass
-
-if session is None and not OFFLINE_MODE:
-    st.error("⚠️ No Snowflake connection. To run on Streamlit Cloud, add Snowflake credentials to **Settings → Secrets**.")
-    st.stop()
+from data_generator import (
+    get_facilities_df, get_departments_df, get_ehr_usage,
+    get_clinical_outcomes, get_payer_claims, get_sdoh_population,
+    get_training_lms, get_support_tickets,
+    AI_ROLLOUT_DATE, AI_ROLLOUT, START_DATE, END_DATE,
+)
 
 HEALTH_SYSTEM = {
     "name": "MetroHealth Alliance", "hospitals": 12, "clinics": 115,
     "revenue": "$3.8B", "providers": 220, "beds": 3730,
 }
-AI_ROLLOUT_DATE = "2025-10-01"
 P = ["#2563EB","#059669","#D97706","#DC2626","#7C3AED","#0891B2","#EA580C","#65A30D"]
-
-
-@st.cache_data(ttl=300)
-def run_query(sql):
-    if OFFLINE_MODE:
-        return _duck.execute(sql.replace(f"{SCHEMA}.", "")).df()
-    return session.sql(sql).to_pandas()
 
 
 def safe(val, fmt=".1f", sfx="", fb="--"):
@@ -77,12 +24,6 @@ def safe(val, fmt=".1f", sfx="", fb="--"):
         if pd.isna(val): return fb
         return f"{val:{fmt}}{sfx}"
     except Exception: return fb
-
-
-@st.cache_data(ttl=60)
-def call_cortex(prompt_text):
-    escaped = prompt_text.replace("'", "''")
-    return run_query(f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{escaped}') AS SUMMARY")
 
 
 def kpi_card(label, value, delta=None, delta_color="normal"):
@@ -108,17 +49,19 @@ def kpi_card(label, value, delta=None, delta_color="normal"):
 
 def gauge_chart(value, title, target=None, color="#2563EB", height=200):
     fig = go.Figure(go.Indicator(
-        mode="gauge+number", value=value, title={"text": title, "font": {"size": 13, "color": "#475569"}},
+        mode="gauge+number", value=value,
+        title={"text": title, "font": {"size": 13, "color": "#475569"}},
         number={"font": {"size": 28, "color": "#0F172A"}, "suffix": "%"},
         gauge={"axis": {"range": [0, 100], "tickwidth": 0, "tickcolor": "#E2E8F0"},
                "bar": {"color": color, "thickness": 0.7},
                "bgcolor": "#F1F5F9", "borderwidth": 0,
-               "threshold": {"line": {"color": "#DC2626", "width": 2}, "thickness": 0.8,
-                              "value": target} if target else {},
+               "threshold": {"line": {"color": "#DC2626", "width": 2},
+                              "thickness": 0.8, "value": target} if target else {},
                "steps": [{"range": [0, 40], "color": "#FEE2E2"},
                           {"range": [40, 70], "color": "#FEF9C3"},
                           {"range": [70, 100], "color": "#DCFCE7"}]}))
-    fig.update_layout(height=height, margin=dict(l=20,r=20,t=40,b=10), paper_bgcolor="rgba(0,0,0,0)", font={"color": "#475569"})
+    fig.update_layout(height=height, margin=dict(l=20,r=20,t=40,b=10),
+                      paper_bgcolor="rgba(0,0,0,0)", font={"color": "#475569"})
     return fig
 
 
@@ -158,15 +101,25 @@ st.markdown("""
             padding:24px 30px;border-radius:14px;margin-bottom:16px;position:relative;overflow:hidden;">
   <div style="position:absolute;top:-20px;right:-20px;width:120px;height:120px;background:rgba(255,255,255,0.06);border-radius:50%;"></div>
   <div style="position:absolute;bottom:-30px;right:60px;width:80px;height:80px;background:rgba(255,255,255,0.04);border-radius:50%;"></div>
-  <h1 style="color:white;margin:0;font-size:26px;font-weight:800;letter-spacing:-0.02em;">
-    CMIO Command Center</h1>
+  <h1 style="color:white;margin:0;font-size:26px;font-weight:800;letter-spacing:-0.02em;">CMIO Command Center</h1>
   <p style="color:#93C5FD;margin:6px 0 0 0;font-size:13px;font-weight:500;">
     Clinical Informatics Intelligence &nbsp;&bull;&nbsp; MetroHealth Alliance
-    &nbsp;&bull;&nbsp; Powered by Snowflake + Cortex AI
+    &nbsp;&bull;&nbsp; Powered by Snowflake
   </p>
 </div>
 """, unsafe_allow_html=True)
 
+# ── Load all data once ────────────────────────────────────────────────────────
+_ehr    = get_ehr_usage()
+_co     = get_clinical_outcomes()
+_claims = get_payer_claims()
+_sdoh   = get_sdoh_population()
+_train  = get_training_lms()
+_tickets= get_support_tickets()
+_facs   = get_facilities_df()
+_depts  = get_departments_df()
+
+data_max = pd.Timestamp(END_DATE).date()
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -175,68 +128,68 @@ with st.sidebar:
     st.divider()
 
     today = datetime.now().date()
-    _max = run_query(f"SELECT MAX(USAGE_DATE)::DATE AS DT FROM {SCHEMA}.EHR_DAILY_USAGE")
-    data_max = _max["DT"].iloc[0] if not _max.empty else today
-    default_end = min(data_max, today)
+    default_end = data_max
     default_start = default_end - timedelta(days=365)
     date_range = st.date_input("Date Range", value=(default_start, default_end), key="dr")
 
-    facilities = run_query(f"SELECT FACILITY_ID, FACILITY_NAME FROM {SCHEMA}.FACILITIES ORDER BY FACILITY_ID")
-    sel_fac = st.multiselect("Facilities", options=facilities["FACILITY_ID"].tolist(),
-        format_func=lambda x: facilities.set_index("FACILITY_ID").loc[x, "FACILITY_NAME"],
+    sel_fac = st.multiselect("Facilities", options=_facs["FACILITY_ID"].tolist(),
+        format_func=lambda x: _facs.set_index("FACILITY_ID").loc[x, "FACILITY_NAME"],
         default=None, placeholder="All Facilities")
 
-    departments = run_query(f"SELECT DEPARTMENT_ID, DEPARTMENT_NAME FROM {SCHEMA}.DEPARTMENTS ORDER BY DEPARTMENT_NAME")
-    sel_dept = st.multiselect("Departments", options=departments["DEPARTMENT_ID"].tolist(),
-        format_func=lambda x: departments.set_index("DEPARTMENT_ID").loc[x, "DEPARTMENT_NAME"],
+    sel_dept = st.multiselect("Departments", options=_depts["DEPARTMENT_ID"].tolist(),
+        format_func=lambda x: _depts.set_index("DEPARTMENT_ID").loc[x, "DEPARTMENT_NAME"],
         default=None, placeholder="All Departments")
 
     st.divider()
 
-    st.markdown("#### :material/chat: Ask Cortex AI")
-    if "qa_history" not in st.session_state:
-        st.session_state.qa_history = []
-
-    for qa in st.session_state.qa_history[-3:]:
-        st.markdown(f'<div style="background:#EFF6FF;padding:8px 10px;border-radius:8px;margin-bottom:4px;font-size:12px;">'
-                    f'<b>Q:</b> {qa["q"]}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="background:#F8FAFC;border:1px solid #E2E8F0;padding:8px 10px;border-radius:8px;margin-bottom:8px;font-size:12px;line-height:1.6;">'
-                    f'{qa["a"][:500]}{"..." if len(qa["a"])>500 else ""}</div>', unsafe_allow_html=True)
-
-    if OFFLINE_MODE:
-        st.info("Q&A requires live Snowflake connection.", icon=":material/cloud_off:")
-    else:
-        with st.form("qa_form", clear_on_submit=True):
-            q = st.text_input("Ask about your data", placeholder="e.g. Which payer has highest denial rate?", label_visibility="collapsed")
-            c1, c2 = st.columns([3,1])
-            ask = c1.form_submit_button("Ask", width="stretch")
-            clr = c2.form_submit_button(":material/delete:", width="stretch")
-        if clr:
-            st.session_state.qa_history = []
-            st.rerun()
-        if ask and q.strip():
-            prompt = (f"You are a clinical informatics advisor for MetroHealth Alliance, "
-                      f"a {HEALTH_SYSTEM['hospitals']}-hospital, {HEALTH_SYSTEM['revenue']} health system with "
-                      f"{HEALTH_SYSTEM['providers']} providers. Answer this CMIO question concisely (3-5 sentences). "
-                      f"Be data-driven and action-oriented. Question: {q}")
-            with st.spinner("Thinking..."):
-                res = call_cortex(prompt)
-            if not res.empty:
-                st.session_state.qa_history.append({"q": q, "a": res.iloc[0]["SUMMARY"]})
-                st.rerun()
+    st.markdown("#### 💡 Quick Insights")
+    with st.expander("Key talking points", expanded=False):
+        st.markdown("""
+- **Emergency Medicine** has the highest pajama time at ~54 min/day — a prime target for DAX rollout
+- **DAX adoption** jumped from 8% to 44% post-Oct 2025 rollout, driving a 16 min/day reduction
+- **Self-Pay claims** have a 28% denial rate — 3× the 8% target, representing ~$2.1M in lost revenue
+- **Cedar Park (63107)** is the highest-risk SDOH community with a composite score of 78/100
+- **Cardiology** shows the strongest EHR adoption improvement: 62→79 post-AI rollout
+        """)
 
     st.divider()
-    fd = (today - data_max).days
-    hc = "green" if fd <= 2 else ("orange" if fd <= 7 else "red")
-    st.markdown(f"**Data Freshness:** :{hc}[{'Live' if fd<=2 else 'Delayed' if fd<=7 else 'Stale'}] ({fd}d)")
-    st.caption("11 tables • 65K+ rows")
+    st.markdown("**Data Freshness:** :green[Live] (synthetic)")
+    st.caption("11 tables • 65K+ rows • Zero compute cost")
 
 
-# ── Filter strings ───────────────────────────────────────────────────────────
-ds = date_range[0].strftime("%Y-%m-%d") if len(date_range) == 2 else default_start.strftime("%Y-%m-%d")
-de = date_range[1].strftime("%Y-%m-%d") if len(date_range) == 2 else default_end.strftime("%Y-%m-%d")
-fac_f = f"AND FACILITY_ID IN ({','.join(repr(f) for f in sel_fac)})" if sel_fac else ""
-dept_f = f"AND DEPARTMENT_ID IN ({','.join(repr(d) for d in sel_dept)})" if sel_dept else ""
+# ── Filter data ───────────────────────────────────────────────────────────────
+ds = date_range[0] if len(date_range) == 2 else default_start
+de = date_range[1] if len(date_range) == 2 else default_end
+
+def filter_ehr(df):
+    d = df[(pd.to_datetime(df["USAGE_DATE"]).dt.date >= ds) & (pd.to_datetime(df["USAGE_DATE"]).dt.date <= de)]
+    if sel_fac: d = d[d["FACILITY_ID"].isin(sel_fac)]
+    if sel_dept: d = d[d["DEPARTMENT_ID"].isin(sel_dept)]
+    return d
+
+def filter_co(df):
+    d = df[(pd.to_datetime(df["METRIC_MONTH"]).dt.date >= ds) & (pd.to_datetime(df["METRIC_MONTH"]).dt.date <= de)]
+    if sel_fac: d = d[d["FACILITY_ID"].isin(sel_fac)]
+    if sel_dept: d = d[d["DEPARTMENT_ID"].isin(sel_dept)]
+    return d
+
+def filter_claims(df):
+    d = df[(pd.to_datetime(df["CLAIM_DATE"]).dt.date >= ds) & (pd.to_datetime(df["CLAIM_DATE"]).dt.date <= de)]
+    if sel_fac: d = d[d["FACILITY_ID"].isin(sel_fac)]
+    return d
+
+def filter_sdoh(df):
+    d = df[(pd.to_datetime(df["METRIC_MONTH"]).dt.date >= ds) & (pd.to_datetime(df["METRIC_MONTH"]).dt.date <= de)]
+    return d
+
+ehr    = filter_ehr(_ehr)
+co     = filter_co(_co)
+claims = filter_claims(_claims)
+sdoh   = filter_sdoh(_sdoh)
+train  = _train.copy()
+if sel_dept: train = train[train["DEPARTMENT_ID"].isin(sel_dept)]
+tickets = _tickets.copy()
+if sel_dept: tickets = tickets[tickets["DEPARTMENT_ID"].isin(sel_dept)]
 
 
 # ── Tabs ─────────────────────────────────────────────────────────────────────
@@ -252,95 +205,80 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # TAB 1 — CLINICAL QUALITY & OUTCOMES
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab1:
-    qkpi = run_query(f"""
-        SELECT
-            ROUND(AVG(READMISSION_RATE)*100, 1) AS READMIT,
-            ROUND(AVG(HAI_RATE)*10000, 2) AS HAI,
-            ROUND(AVG(HCAHPS_SCORE), 0) AS HCAHPS,
-            ROUND(AVG(DOC_COMPLETION_RATE)*100, 1) AS DOC_COMP,
-            ROUND(AVG(CDS_OVERRIDE_RATE)*100, 1) AS CDS_OVERRIDE,
-            ROUND(AVG(ORDER_SET_COMPLIANCE)*100, 1) AS ORDER_SET
-        FROM {SCHEMA}.CLINICAL_OUTCOMES
-        WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}' {fac_f} {dept_f}
-    """)
-
-    burn_kpi = run_query(f"""
-        SELECT ROUND(AVG(AFTER_HOURS_MINUTES), 1) AS PAJAMA,
-               ROUND(SUM(CASE WHEN AI_ASSIST_USED THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0),1) AS DAX_PCT
-        FROM {SCHEMA}.EHR_DAILY_USAGE
-        WHERE USAGE_DATE >= '{ds}' AND USAGE_DATE <= '{de}' {fac_f} {dept_f}
-    """)
+    readmit  = round(co["READMISSION_RATE"].mean() * 100, 1) if not co.empty else 0
+    hcahps   = round(co["HCAHPS_SCORE"].mean(), 0) if not co.empty else 0
+    hai      = round(co["HAI_RATE"].mean() * 10000, 2) if not co.empty else 0
+    doc_comp = round(co["DOC_COMPLETION_RATE"].mean() * 100, 1) if not co.empty else 0
+    cds_ovr  = round(co["CDS_OVERRIDE_RATE"].mean() * 100, 1) if not co.empty else 0
+    pajama   = round(ehr["AFTER_HOURS_MINUTES"].mean(), 1) if not ehr.empty else 0
+    dax_pct  = round(ehr["AI_ASSIST_USED"].mean() * 100, 1) if not ehr.empty else 0
 
     c1,c2,c3,c4,c5,c6 = st.columns(6)
-    with c1: kpi_card("30-Day Readmit", safe(qkpi["READMIT"].iloc[0], ".1f", "%"), "-0.9% vs prior yr", "inverse")
-    with c2: kpi_card("HCAHPS Score", safe(qkpi["HCAHPS"].iloc[0], ".0f", "/100"), "+1.4 pts")
-    with c3: kpi_card("HAI Rate /10K", safe(qkpi["HAI"].iloc[0], ".2f"), "-0.12", "inverse")
-    with c4: kpi_card("Doc Completion", safe(qkpi["DOC_COMP"].iloc[0], ".1f", "%"), "+2.1%")
-    with c5: kpi_card("Pajama Time", safe(burn_kpi["PAJAMA"].iloc[0], ".1f", " min"), "-3.2 min", "inverse")
-    with c6: kpi_card("DAX Adoption", safe(burn_kpi["DAX_PCT"].iloc[0], ".1f", "%"), "+12.4%")
+    with c1: kpi_card("30-Day Readmit", f"{readmit}%", "-0.9% vs prior yr", "inverse")
+    with c2: kpi_card("HCAHPS Score", f"{int(hcahps)}/100", "+1.4 pts")
+    with c3: kpi_card("HAI Rate /10K", f"{hai:.2f}", "-0.12", "inverse")
+    with c4: kpi_card("Doc Completion", f"{doc_comp}%", "+2.1%")
+    with c5: kpi_card("Pajama Time", f"{pajama:.1f} min", "-3.2 min", "inverse")
+    with c6: kpi_card("DAX Adoption", f"{dax_pct}%", "+12.4%")
 
     section_header("📊", "Quality Performance Gauges")
     g1,g2,g3,g4 = st.columns(4)
-    rv = qkpi["READMIT"].iloc[0] if not qkpi.empty else 0
-    with g1: st.plotly_chart(gauge_chart(max(0, 100 - float(rv or 0)*5), "Readmit Score", 75, "#2563EB"), width="stretch")
-    with g2: st.plotly_chart(gauge_chart(float(qkpi["HCAHPS"].iloc[0] or 0), "HCAHPS", 80, "#059669"), width="stretch")
-    with g3: st.plotly_chart(gauge_chart(float(qkpi["DOC_COMP"].iloc[0] or 0), "Doc Completion", 90, "#7C3AED"), width="stretch")
-    with g4: st.plotly_chart(gauge_chart(max(0, 100 - float(qkpi["CDS_OVERRIDE"].iloc[0] or 0)), "CDS Compliance", 60, "#D97706"), width="stretch")
+    with g1: st.plotly_chart(gauge_chart(max(0, 100 - readmit * 5), "Readmit Score", 75, "#2563EB"), width="stretch")
+    with g2: st.plotly_chart(gauge_chart(float(hcahps), "HCAHPS", 80, "#059669"), width="stretch")
+    with g3: st.plotly_chart(gauge_chart(doc_comp, "Doc Completion", 90, "#7C3AED"), width="stretch")
+    with g4: st.plotly_chart(gauge_chart(max(0, 100 - cds_ovr), "CDS Compliance", 60, "#D97706"), width="stretch")
 
     section_header("📈", "Monthly Trends")
     co1, co2 = st.columns(2)
     with co1:
         st.markdown("**30-Day Readmission Rate Trend**")
-        trend = run_query(f"""
-            SELECT METRIC_MONTH,
-                   ROUND(AVG(READMISSION_RATE)*100, 2) AS READMIT,
-                   ROUND(AVG(DOC_COMPLETION_RATE)*100, 1) AS DOC_COMP
-            FROM {SCHEMA}.CLINICAL_OUTCOMES
-            WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}' {fac_f} {dept_f}
-            GROUP BY METRIC_MONTH ORDER BY METRIC_MONTH
-        """)
+        trend = co.copy()
+        trend["METRIC_MONTH"] = pd.to_datetime(trend["METRIC_MONTH"])
+        trend = trend.groupby("METRIC_MONTH").agg(READMIT=("READMISSION_RATE", lambda x: round(x.mean()*100, 2))).reset_index()
         if not trend.empty:
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=trend["METRIC_MONTH"], y=trend["READMIT"], name="Readmission %",
-                          fill="tozeroy", fillcolor="rgba(220,38,38,0.08)", line=dict(color="#DC2626", width=2.5), mode="lines+markers", marker=dict(size=5)))
-            fig.add_hline(y=15, line_dash="dot", line_color="#94A3B8", annotation_text="CMS Target: 15%", annotation_font_color="#94A3B8")
-            fig.add_shape(type="line", x0=AI_ROLLOUT_DATE, x1=AI_ROLLOUT_DATE, y0=0, y1=1, yref="paper", line=dict(color="#059669", width=1.5, dash="dash"))
-            fig.add_annotation(x=AI_ROLLOUT_DATE, y=0.95, yref="paper", text="DAX Rollout", showarrow=False, font=dict(color="#059669", size=10))
+                          fill="tozeroy", fillcolor="rgba(220,38,38,0.08)",
+                          line=dict(color="#DC2626", width=2.5), mode="lines+markers", marker=dict(size=5)))
+            fig.add_hline(y=15, line_dash="dot", line_color="#94A3B8", annotation_text="CMS Target: 15%",
+                          annotation_font_color="#94A3B8")
+            fig.add_shape(type="line", x0=AI_ROLLOUT_DATE, x1=AI_ROLLOUT_DATE, y0=0, y1=1, yref="paper",
+                          line=dict(color="#059669", width=1.5, dash="dash"))
+            fig.add_annotation(x=AI_ROLLOUT_DATE, y=0.95, yref="paper", text="DAX Rollout",
+                               showarrow=False, font=dict(color="#059669", size=10))
             st.plotly_chart(chart_defaults(fig, 320), width="stretch")
 
     with co2:
         st.markdown("**Provider After-Hours (Pajama Time) Trend**")
-        pajama_trend = run_query(f"""
-            SELECT DATE_TRUNC('month', USAGE_DATE) AS MO,
-                   ROUND(AVG(AFTER_HOURS_MINUTES), 1) AS PAJAMA,
-                   ROUND(AVG(INBASKET_AFTER_HOURS_MIN), 1) AS INBOX
-            FROM {SCHEMA}.EHR_DAILY_USAGE
-            WHERE USAGE_DATE >= '{ds}' AND USAGE_DATE <= '{de}' {fac_f} {dept_f}
-            GROUP BY MO ORDER BY MO
-        """)
-        if not pajama_trend.empty:
+        pt = ehr.copy()
+        pt["USAGE_DATE"] = pd.to_datetime(pt["USAGE_DATE"])
+        pt["MO"] = pt["USAGE_DATE"].dt.to_period("M").dt.to_timestamp()
+        pt = pt.groupby("MO").agg(PAJAMA=("AFTER_HOURS_MINUTES", lambda x: round(x.mean(),1)),
+                                    INBOX=("INBASKET_AFTER_HOURS_MIN", lambda x: round(x.mean(),1))).reset_index()
+        if not pt.empty:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=pajama_trend["MO"], y=pajama_trend["PAJAMA"], name="Total After-Hours",
-                          fill="tozeroy", fillcolor="rgba(37,99,235,0.08)", line=dict(color="#2563EB", width=2.5), mode="lines+markers", marker=dict(size=5)))
-            fig.add_trace(go.Scatter(x=pajama_trend["MO"], y=pajama_trend["INBOX"], name="InBasket", line=dict(color="#D97706", width=1.5, dash="dash")))
-            fig.add_shape(type="line", x0=AI_ROLLOUT_DATE, x1=AI_ROLLOUT_DATE, y0=0, y1=1, yref="paper", line=dict(color="#059669", width=1.5, dash="dash"))
-            fig.add_annotation(x=AI_ROLLOUT_DATE, y=0.95, yref="paper", text="DAX Rollout", showarrow=False, font=dict(color="#059669", size=10))
+            fig.add_trace(go.Scatter(x=pt["MO"], y=pt["PAJAMA"], name="Total After-Hours",
+                          fill="tozeroy", fillcolor="rgba(37,99,235,0.08)",
+                          line=dict(color="#2563EB", width=2.5), mode="lines+markers", marker=dict(size=5)))
+            fig.add_trace(go.Scatter(x=pt["MO"], y=pt["INBOX"], name="InBasket",
+                          line=dict(color="#D97706", width=1.5, dash="dash")))
+            fig.add_shape(type="line", x0=AI_ROLLOUT_DATE, x1=AI_ROLLOUT_DATE, y0=0, y1=1, yref="paper",
+                          line=dict(color="#059669", width=1.5, dash="dash"))
+            fig.add_annotation(x=AI_ROLLOUT_DATE, y=0.95, yref="paper", text="DAX Rollout",
+                               showarrow=False, font=dict(color="#059669", size=10))
             fig = chart_defaults(fig, 320)
             fig.update_layout(yaxis_title="Minutes / Day")
             st.plotly_chart(fig, width="stretch")
 
     section_header("🏥", "Department Scorecard")
-    corr = run_query(f"""
-        SELECT o.DEPARTMENT_NAME,
-               ROUND(AVG(o.DOC_COMPLETION_RATE)*100, 1) AS DOC_COMP,
-               ROUND(AVG(o.READMISSION_RATE)*100, 1) AS READMIT,
-               ROUND(AVG(o.CDS_OVERRIDE_RATE)*100, 1) AS CDS_OVERRIDE,
-               ROUND(AVG(o.HCAHPS_SCORE), 0) AS HCAHPS,
-               SUM(o.ENCOUNTER_COUNT) AS ENCOUNTERS
-        FROM {SCHEMA}.CLINICAL_OUTCOMES o
-        WHERE o.METRIC_MONTH >= '{ds}' AND o.METRIC_MONTH <= '{de}' {fac_f} {dept_f}
-        GROUP BY o.DEPARTMENT_NAME ORDER BY READMIT DESC
-    """)
+    corr = co.groupby("DEPARTMENT_NAME").agg(
+        DOC_COMP=("DOC_COMPLETION_RATE", lambda x: round(x.mean()*100, 1)),
+        READMIT=("READMISSION_RATE", lambda x: round(x.mean()*100, 1)),
+        CDS_OVERRIDE=("CDS_OVERRIDE_RATE", lambda x: round(x.mean()*100, 1)),
+        HCAHPS=("HCAHPS_SCORE", lambda x: round(x.mean(), 0)),
+        ENCOUNTERS=("ENCOUNTER_COUNT", "sum"),
+    ).reset_index()
+
     if not corr.empty:
         co1, co2 = st.columns(2)
         with co1:
@@ -357,10 +295,10 @@ with tab1:
                             labels=dict(x="Department", y="Metric", color="Value"), aspect="auto")
             st.plotly_chart(chart_defaults(fig, 340), width="stretch")
 
-    with st.expander(":material/code: View SQL"):
-        st.code(f"""SELECT DEPARTMENT_NAME, AVG(DOC_COMPLETION_RATE)*100 AS doc_comp,
+    with st.expander(":material/code: View SQL — how this would look against live data"):
+        st.code("""SELECT DEPARTMENT_NAME, AVG(DOC_COMPLETION_RATE)*100 AS doc_comp,
        AVG(READMISSION_RATE)*100 AS readmit, AVG(CDS_OVERRIDE_RATE)*100 AS cds_override
-FROM {SCHEMA}.CLINICAL_OUTCOMES WHERE METRIC_MONTH BETWEEN '{ds}' AND '{de}'
+FROM CLINICAL_OUTCOMES WHERE METRIC_MONTH BETWEEN :start AND :end
 GROUP BY DEPARTMENT_NAME;""", language="sql")
 
 
@@ -368,34 +306,28 @@ GROUP BY DEPARTMENT_NAME;""", language="sql")
 # TAB 2 — PAYER & CLAIMS INTELLIGENCE
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab2:
-    claims_kpi = run_query(f"""
-        SELECT
-            COUNT(*) AS TOTAL_CLAIMS,
-            ROUND(SUM(BILLED_AMOUNT), 0) AS TOTAL_BILLED,
-            ROUND(SUM(PAID_AMOUNT), 0) AS TOTAL_PAID,
-            ROUND(SUM(CASE WHEN CLAIM_STATUS='Denied' THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0), 1) AS DENIAL_RATE,
-            ROUND(SUM(CASE WHEN CLAIM_STATUS='Denied' THEN BILLED_AMOUNT ELSE 0 END), 0) AS DENIED_AMOUNT,
-            ROUND(AVG(DAYS_TO_PAYMENT), 0) AS AVG_DAYS_PAY,
-            ROUND(SUM(CASE WHEN APPEAL_WON THEN 1 ELSE 0 END)*100.0/NULLIF(SUM(CASE WHEN APPEAL_SUBMITTED THEN 1 ELSE 0 END),0), 1) AS APPEAL_WIN_RATE
-        FROM {SCHEMA}.PAYER_CLAIMS
-        WHERE CLAIM_DATE >= '{ds}' AND CLAIM_DATE <= '{de}' {fac_f}
-    """)
+    total_claims = len(claims)
+    total_billed = claims["BILLED_AMOUNT"].sum()
+    total_paid   = claims["PAID_AMOUNT"].sum()
+    denied_amt   = claims[claims["CLAIM_STATUS"]=="Denied"]["BILLED_AMOUNT"].sum()
+    denial_rate  = round(len(claims[claims["CLAIM_STATUS"]=="Denied"]) / max(total_claims,1) * 100, 1)
+    appeal_sub   = claims["APPEAL_SUBMITTED"].sum()
+    appeal_won   = claims["APPEAL_WON"].sum()
+    appeal_win_rate = round(appeal_won / max(appeal_sub,1) * 100, 1)
 
     c1,c2,c3,c4,c5 = st.columns(5)
-    with c1: kpi_card("Total Claims", f"{int(claims_kpi['TOTAL_CLAIMS'].iloc[0] or 0):,}")
-    with c2: kpi_card("Revenue Collected", f"${int(claims_kpi['TOTAL_PAID'].iloc[0] or 0):,.0f}", f"of ${int(claims_kpi['TOTAL_BILLED'].iloc[0] or 0):,.0f} billed")
-    with c3: kpi_card("Denial Rate", safe(claims_kpi["DENIAL_RATE"].iloc[0], ".1f", "%"), "Target < 8%", "inverse")
-    with c4: kpi_card("Denied Revenue", f"${int(claims_kpi['DENIED_AMOUNT'].iloc[0] or 0):,.0f}", delta_color="off")
-    with c5: kpi_card("Appeal Win Rate", safe(claims_kpi["APPEAL_WIN_RATE"].iloc[0], ".1f", "%"), "+5.2%")
+    with c1: kpi_card("Total Claims", f"{total_claims:,}")
+    with c2: kpi_card("Revenue Collected", f"${total_paid:,.0f}", f"of ${total_billed:,.0f} billed")
+    with c3: kpi_card("Denial Rate", f"{denial_rate}%", "Target < 8%", "inverse")
+    with c4: kpi_card("Denied Revenue", f"${denied_amt:,.0f}", delta_color="off")
+    with c5: kpi_card("Appeal Win Rate", f"{appeal_win_rate}%", "+5.2%")
 
     section_header("💰", "Revenue Waterfall")
     st.markdown("**Billed → Collected Revenue Flow**")
-    billed = float(claims_kpi["TOTAL_BILLED"].iloc[0] or 0)
-    paid = float(claims_kpi["TOTAL_PAID"].iloc[0] or 0)
-    denied = float(claims_kpi["DENIED_AMOUNT"].iloc[0] or 0)
+    contractual_adj = total_billed - total_paid - denied_amt
     fig = go.Figure(go.Waterfall(
         x=["Billed", "Contractual Adj.", "Denials", "Collected"],
-        y=[billed, -(billed - paid - denied), -denied, 0],
+        y=[total_billed, -contractual_adj, -denied_amt, 0],
         measure=["absolute", "relative", "relative", "total"],
         connector={"line": {"color": "#E2E8F0"}},
         decreasing={"marker": {"color": "#FCA5A5"}},
@@ -410,75 +342,67 @@ with tab2:
     co1, co2 = st.columns(2)
     with co1:
         st.markdown("**Denial Rate by Payer**")
-        by_payer = run_query(f"""
-            SELECT PAYER_NAME, PAYER_TYPE,
-                   COUNT(*) AS CLAIMS,
-                   ROUND(SUM(CASE WHEN CLAIM_STATUS='Denied' THEN 1 ELSE 0 END)*100.0/COUNT(*), 1) AS DENIAL_RATE,
-                   ROUND(SUM(BILLED_AMOUNT), 0) AS BILLED,
-                   ROUND(SUM(PAID_AMOUNT), 0) AS PAID
-            FROM {SCHEMA}.PAYER_CLAIMS
-            WHERE CLAIM_DATE >= '{ds}' AND CLAIM_DATE <= '{de}' {fac_f}
-            GROUP BY PAYER_NAME, PAYER_TYPE ORDER BY DENIAL_RATE DESC
-        """)
+        by_payer = claims.groupby(["PAYER_NAME","PAYER_TYPE"]).apply(
+            lambda x: pd.Series({
+                "CLAIMS": len(x),
+                "DENIAL_RATE": round(len(x[x["CLAIM_STATUS"]=="Denied"]) / max(len(x),1) * 100, 1),
+                "BILLED": round(x["BILLED_AMOUNT"].sum(), 0),
+                "PAID": round(x["PAID_AMOUNT"].sum(), 0),
+            })
+        ).reset_index()
+        by_payer = by_payer.sort_values("DENIAL_RATE", ascending=False)
         if not by_payer.empty:
             fig = px.bar(by_payer, x="PAYER_NAME", y="DENIAL_RATE", color="PAYER_TYPE",
-                         color_discrete_map={"Government": "#2563EB", "Commercial": "#7C3AED", "Self-Pay": "#D97706"},
-                         text="DENIAL_RATE", labels={"PAYER_NAME": "", "DENIAL_RATE": "Denial Rate %"})
+                         color_discrete_map={"Government":"#2563EB","Commercial":"#7C3AED","Self-Pay":"#D97706"},
+                         text="DENIAL_RATE", labels={"PAYER_NAME":"","DENIAL_RATE":"Denial Rate %"})
             fig.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
             fig.add_hline(y=8, line_dash="dot", line_color="#DC2626", annotation_text="8% Target")
             st.plotly_chart(chart_defaults(fig, 340), width="stretch")
 
     with co2:
         st.markdown("**Top Denial Codes by Volume (Treemap)**")
-        by_code = run_query(f"""
-            SELECT DENIAL_CODE, DENIAL_REASON, COUNT(*) AS CNT,
-                   ROUND(SUM(BILLED_AMOUNT), 0) AS LOST_REVENUE
-            FROM {SCHEMA}.PAYER_CLAIMS
-            WHERE CLAIM_STATUS = 'Denied' AND CLAIM_DATE >= '{ds}' AND CLAIM_DATE <= '{de}' {fac_f}
-            GROUP BY DENIAL_CODE, DENIAL_REASON ORDER BY CNT DESC LIMIT 8
-        """)
+        by_code = claims[claims["CLAIM_STATUS"]=="Denied"].groupby(["DENIAL_CODE","DENIAL_REASON"]).agg(
+            CNT=("CLAIM_ID","count"),
+            LOST_REVENUE=("BILLED_AMOUNT","sum")
+        ).reset_index().sort_values("CNT", ascending=False).head(8)
         if not by_code.empty:
             fig = px.treemap(by_code, path=["DENIAL_CODE"], values="CNT", color="LOST_REVENUE",
                              color_continuous_scale=["#DBEAFE","#2563EB","#1E3A5F"],
                              hover_data=["DENIAL_REASON","LOST_REVENUE"],
-                             labels={"CNT": "Claims", "LOST_REVENUE": "Lost Revenue"})
+                             labels={"CNT":"Claims","LOST_REVENUE":"Lost Revenue"})
             fig.update_layout(height=340, margin=dict(l=5,r=5,t=30,b=5))
             st.plotly_chart(fig, width="stretch")
 
     section_header("📅", "Monthly Claims Trend")
     st.markdown("**Revenue Collected vs Denial Rate — Monthly**")
-    monthly = run_query(f"""
-        SELECT DATE_TRUNC('month', CLAIM_DATE) AS MO,
-               COUNT(*) AS CLAIMS,
-               ROUND(SUM(CASE WHEN CLAIM_STATUS='Denied' THEN 1 ELSE 0 END)*100.0/COUNT(*), 1) AS DENIAL_RATE,
-               ROUND(SUM(PAID_AMOUNT), 0) AS REVENUE
-        FROM {SCHEMA}.PAYER_CLAIMS
-        WHERE CLAIM_DATE >= '{ds}' AND CLAIM_DATE <= '{de}' {fac_f}
-        GROUP BY MO ORDER BY MO
-    """)
+    monthly = claims.copy()
+    monthly["CLAIM_DATE"] = pd.to_datetime(monthly["CLAIM_DATE"])
+    monthly["MO"] = monthly["CLAIM_DATE"].dt.to_period("M").dt.to_timestamp()
+    monthly = monthly.groupby("MO").agg(
+        CLAIMS=("CLAIM_ID","count"),
+        DENIAL_RATE=("CLAIM_STATUS", lambda x: round((x=="Denied").mean()*100, 1)),
+        REVENUE=("PAID_AMOUNT","sum")
+    ).reset_index()
     if not monthly.empty:
         fig = go.Figure()
         fig.add_trace(go.Bar(x=monthly["MO"], y=monthly["REVENUE"], name="Revenue Collected",
                      marker_color="#2563EB", opacity=0.7, yaxis="y"))
         fig.add_trace(go.Scatter(x=monthly["MO"], y=monthly["DENIAL_RATE"], name="Denial Rate %",
-                     line=dict(color="#DC2626", width=2.5), mode="lines+markers", marker=dict(size=6), yaxis="y2"))
-        chart_defaults(fig, 320)
+                     line=dict(color="#DC2626", width=2.5), mode="lines+markers",
+                     marker=dict(size=6), yaxis="y2"))
+        fig = chart_defaults(fig, 320)
         fig.update_layout(yaxis=dict(title="Revenue ($)", side="left"),
-                          yaxis2=dict(title="Denial Rate %", side="right", overlaying="y", range=[0, 25]),
+                          yaxis2=dict(title="Denial Rate %", side="right", overlaying="y", range=[0,25]),
                           barmode="group")
         st.plotly_chart(fig, width="stretch")
 
     section_header("🔍", "Service Line Performance")
-    by_sl = run_query(f"""
-        SELECT SERVICE_LINE,
-               COUNT(*) AS CLAIMS,
-               ROUND(SUM(CASE WHEN CLAIM_STATUS='Denied' THEN 1 ELSE 0 END)*100.0/COUNT(*), 1) AS DENIAL_RATE,
-               ROUND(SUM(PAID_AMOUNT), 0) AS REVENUE,
-               ROUND(AVG(DAYS_TO_PAYMENT), 0) AS AVG_DAYS
-        FROM {SCHEMA}.PAYER_CLAIMS
-        WHERE CLAIM_DATE >= '{ds}' AND CLAIM_DATE <= '{de}' {fac_f}
-        GROUP BY SERVICE_LINE ORDER BY REVENUE DESC
-    """)
+    by_sl = claims.groupby("SERVICE_LINE").agg(
+        CLAIMS=("CLAIM_ID","count"),
+        DENIAL_RATE=("CLAIM_STATUS", lambda x: round((x=="Denied").mean()*100, 1)),
+        REVENUE=("PAID_AMOUNT", lambda x: round(x.sum(), 0)),
+        AVG_DAYS=("DAYS_TO_PAYMENT", lambda x: round(x.mean(), 0)),
+    ).reset_index().sort_values("REVENUE", ascending=False)
     if not by_sl.empty:
         def hl_denial(row):
             v = row.get("DENIAL_RATE", 0)
@@ -491,66 +415,58 @@ with tab2:
                                     "AVG_DAYS": st.column_config.NumberColumn("Avg Days to Pay", format="%d")})
 
     with st.expander(":material/code: View SQL"):
-        st.code(f"""SELECT PAYER_NAME, COUNT(*) AS claims,
+        st.code("""SELECT PAYER_NAME, COUNT(*) AS claims,
        SUM(CASE WHEN CLAIM_STATUS='Denied' THEN 1 ELSE 0 END)*100.0/COUNT(*) AS denial_rate,
        SUM(BILLED_AMOUNT) AS billed, SUM(PAID_AMOUNT) AS paid
-FROM {SCHEMA}.PAYER_CLAIMS WHERE CLAIM_DATE BETWEEN '{ds}' AND '{de}'
-GROUP BY PAYER_NAME ORDER BY denial_rate DESC;""", language="sql")
+FROM PAYER_CLAIMS GROUP BY PAYER_NAME ORDER BY denial_rate DESC;""", language="sql")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 3 — SDOH & POPULATION HEALTH
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab3:
-    sdoh_kpi = run_query(f"""
-        SELECT
-            COUNT(DISTINCT ZIP_CODE) AS COMMUNITIES,
-            ROUND(AVG(COMPOSITE_SDOH_SCORE), 0) AS AVG_SDOH_SCORE,
-            ROUND(AVG(UNINSURED_PCT), 1) AS AVG_UNINSURED,
-            ROUND(AVG(CARE_GAP_CLOSURE_PCT), 1) AS AVG_CARE_GAP,
-            ROUND(AVG(ED_VISIT_RATE_PER_1K), 1) AS AVG_ED_RATE,
-            SUM(CASE WHEN SDOH_RISK_TIER='High' THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0) AS HIGH_RISK_PCT
-        FROM {SCHEMA}.SDOH_POPULATION
-        WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}'
-    """)
+    communities_n = sdoh["ZIP_CODE"].nunique() if not sdoh.empty else 0
+    avg_sdoh = round(sdoh["COMPOSITE_SDOH_SCORE"].mean(), 0) if not sdoh.empty else 0
+    avg_uninsured = round(sdoh["UNINSURED_PCT"].mean(), 1) if not sdoh.empty else 0
+    avg_care_gap = round(sdoh["CARE_GAP_CLOSURE_PCT"].mean(), 1) if not sdoh.empty else 0
+    avg_ed = round(sdoh["ED_VISIT_RATE_PER_1K"].mean(), 1) if not sdoh.empty else 0
 
     c1,c2,c3,c4,c5 = st.columns(5)
-    with c1: kpi_card("Communities Tracked", safe(sdoh_kpi["COMMUNITIES"].iloc[0], ".0f"))
-    with c2: kpi_card("Avg SDOH Risk Score", safe(sdoh_kpi["AVG_SDOH_SCORE"].iloc[0], ".0f", "/100"))
-    with c3: kpi_card("Avg Uninsured", safe(sdoh_kpi["AVG_UNINSURED"].iloc[0], ".1f", "%"))
-    with c4: kpi_card("Care Gap Closure", safe(sdoh_kpi["AVG_CARE_GAP"].iloc[0], ".1f", "%"), "Target > 80%")
-    with c5: kpi_card("Avg ED Rate /1K", safe(sdoh_kpi["AVG_ED_RATE"].iloc[0], ".1f"))
+    with c1: kpi_card("Communities Tracked", str(communities_n))
+    with c2: kpi_card("Avg SDOH Risk Score", f"{int(avg_sdoh)}/100")
+    with c3: kpi_card("Avg Uninsured", f"{avg_uninsured}%")
+    with c4: kpi_card("Care Gap Closure", f"{avg_care_gap}%", "Target > 80%")
+    with c5: kpi_card("Avg ED Rate /1K", f"{avg_ed}")
 
     section_header("🗺️", "Community Risk Map")
-    community = run_query(f"""
-        SELECT COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER,
-               ROUND(AVG(COMPOSITE_SDOH_SCORE), 0) AS RISK_SCORE,
-               ROUND(AVG(UNINSURED_PCT), 1) AS UNINSURED,
-               ROUND(AVG(MEDIAN_INCOME), 0) AS INCOME,
-               ROUND(AVG(ED_VISIT_RATE_PER_1K), 1) AS ED_RATE,
-               ROUND(AVG(CARE_GAP_CLOSURE_PCT), 1) AS CARE_GAP
-        FROM {SCHEMA}.SDOH_POPULATION
-        WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}'
-        GROUP BY COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER
-        ORDER BY RISK_SCORE DESC
-    """)
+    community = sdoh.groupby(["COMMUNITY_NAME","ZIP_CODE","SDOH_RISK_TIER"]).agg(
+        RISK_SCORE=("COMPOSITE_SDOH_SCORE","mean"),
+        UNINSURED=("UNINSURED_PCT","mean"),
+        INCOME=("MEDIAN_INCOME","mean"),
+        ED_RATE=("ED_VISIT_RATE_PER_1K","mean"),
+        CARE_GAP=("CARE_GAP_CLOSURE_PCT","mean"),
+    ).reset_index()
+    community["RISK_SCORE"] = community["RISK_SCORE"].round(0)
+    community["INCOME"] = community["INCOME"].round(0)
+    community["ED_RATE"] = community["ED_RATE"].round(1)
+
     co1, co2 = st.columns(2)
     with co1:
         st.markdown("**Income vs ED Utilization by Community**")
         if not community.empty:
             fig = px.scatter(community, x="INCOME", y="ED_RATE", size="RISK_SCORE",
                              color="SDOH_RISK_TIER", text="COMMUNITY_NAME",
-                             color_discrete_map={"High": "#DC2626", "Medium": "#D97706", "Low": "#059669"},
-                             labels={"INCOME": "Median Income ($)", "ED_RATE": "ED Visits /1K"})
+                             color_discrete_map={"High":"#DC2626","Medium":"#D97706","Low":"#059669"},
+                             labels={"INCOME":"Median Income ($)","ED_RATE":"ED Visits /1K"})
             fig.update_traces(textposition="top center", textfont_size=9)
             st.plotly_chart(chart_defaults(fig, 360), width="stretch")
 
     with co2:
         st.markdown("**SDOH Risk Distribution by Community**")
         if not community.empty:
-            fig = px.sunburst(community, path=["SDOH_RISK_TIER", "COMMUNITY_NAME"], values="RISK_SCORE",
+            fig = px.sunburst(community, path=["SDOH_RISK_TIER","COMMUNITY_NAME"], values="RISK_SCORE",
                               color="RISK_SCORE", color_continuous_scale=["#DCFCE7","#FDE68A","#FCA5A5"],
-                              labels={"RISK_SCORE": "SDOH Score"})
+                              labels={"RISK_SCORE":"SDOH Score"})
             fig.update_layout(height=360, margin=dict(l=5,r=5,t=30,b=5))
             st.plotly_chart(fig, width="stretch")
 
@@ -558,225 +474,181 @@ with tab3:
     co1, co2 = st.columns(2)
     with co1:
         st.markdown("**Barrier Prevalence by Community**")
-        barriers = run_query(f"""
-            SELECT COMMUNITY_NAME,
-                   ROUND(AVG(HOUSING_INSTABILITY_PCT), 1) AS HOUSING,
-                   ROUND(AVG(TRANSPORT_BARRIER_PCT), 1) AS TRANSPORT,
-                   ROUND(AVG(LANGUAGE_BARRIER_PCT), 1) AS LANGUAGE,
-                   ROUND(AVG(UNINSURED_PCT), 1) AS UNINSURED
-            FROM {SCHEMA}.SDOH_POPULATION
-            WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}'
-            GROUP BY COMMUNITY_NAME ORDER BY HOUSING DESC
-        """)
+        barriers = sdoh.groupby("COMMUNITY_NAME").agg(
+            HOUSING=("HOUSING_INSTABILITY_PCT","mean"),
+            TRANSPORT=("TRANSPORT_BARRIER_PCT","mean"),
+            LANGUAGE=("LANGUAGE_BARRIER_PCT","mean"),
+            UNINSURED=("UNINSURED_PCT","mean"),
+        ).reset_index().sort_values("HOUSING", ascending=False)
+        barriers = barriers.round(1)
         if not barriers.empty:
             fig = go.Figure()
-            for col, color, name in [("HOUSING","#DC2626","Housing"), ("TRANSPORT","#D97706","Transport"),
-                                      ("LANGUAGE","#7C3AED","Language"), ("UNINSURED","#2563EB","Uninsured")]:
+            for col, color, name in [("HOUSING","#DC2626","Housing"),("TRANSPORT","#D97706","Transport"),
+                                      ("LANGUAGE","#7C3AED","Language"),("UNINSURED","#2563EB","Uninsured")]:
                 fig.add_trace(go.Bar(name=name, x=barriers["COMMUNITY_NAME"], y=barriers[col], marker_color=color))
-            chart_defaults(fig, 360)
+            fig = chart_defaults(fig, 360)
             fig.update_layout(barmode="group", xaxis_tickangle=-35)
             st.plotly_chart(fig, width="stretch")
 
     with co2:
         st.markdown("**Chronic Condition Prevalence by SDOH Risk Tier**")
-        conditions = run_query(f"""
-            SELECT CHRONIC_CONDITION, SDOH_RISK_TIER,
-                   ROUND(AVG(PREVALENCE_PCT), 1) AS PREVALENCE,
-                   ROUND(AVG(READMISSION_RATE_PCT), 1) AS READMIT
-            FROM {SCHEMA}.SDOH_POPULATION
-            WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}'
-            GROUP BY CHRONIC_CONDITION, SDOH_RISK_TIER
-            ORDER BY CHRONIC_CONDITION, SDOH_RISK_TIER
-        """)
+        conditions = sdoh.groupby(["CHRONIC_CONDITION","SDOH_RISK_TIER"]).agg(
+            PREVALENCE=("PREVALENCE_PCT","mean"),
+        ).reset_index().round(1)
         if not conditions.empty:
             fig = px.bar(conditions, x="CHRONIC_CONDITION", y="PREVALENCE", color="SDOH_RISK_TIER",
                          barmode="group",
-                         color_discrete_map={"High": "#DC2626", "Medium": "#D97706", "Low": "#059669"},
-                         labels={"CHRONIC_CONDITION": "", "PREVALENCE": "Prevalence %"})
+                         color_discrete_map={"High":"#DC2626","Medium":"#D97706","Low":"#059669"},
+                         labels={"CHRONIC_CONDITION":"","PREVALENCE":"Prevalence %"})
             st.plotly_chart(chart_defaults(fig, 360), width="stretch")
 
     section_header("📋", "Community Detail")
-    detail = run_query(f"""
-        SELECT COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER,
-               ROUND(AVG(COMPOSITE_SDOH_SCORE), 0) AS SDOH_SCORE,
-               ROUND(AVG(MEDIAN_INCOME), 0) AS MEDIAN_INCOME,
-               ROUND(AVG(UNINSURED_PCT), 1) AS UNINSURED_PCT,
-               ROUND(AVG(HEALTH_LITERACY_SCORE), 0) AS HEALTH_LITERACY,
-               ROUND(AVG(ED_VISIT_RATE_PER_1K), 1) AS ED_RATE,
-               ROUND(AVG(CARE_GAP_CLOSURE_PCT), 1) AS CARE_GAP_PCT,
-               ROUND(AVG(PREVENTIVE_SCREENING_PCT), 1) AS SCREENING_PCT
-        FROM {SCHEMA}.SDOH_POPULATION
-        WHERE METRIC_MONTH >= '{ds}' AND METRIC_MONTH <= '{de}'
-        GROUP BY COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER
-        ORDER BY SDOH_SCORE DESC
-    """)
+    detail = sdoh.groupby(["COMMUNITY_NAME","ZIP_CODE","SDOH_RISK_TIER"]).agg(
+        SDOH_SCORE=("COMPOSITE_SDOH_SCORE","mean"),
+        MEDIAN_INCOME=("MEDIAN_INCOME","mean"),
+        UNINSURED_PCT=("UNINSURED_PCT","mean"),
+        HEALTH_LITERACY=("HEALTH_LITERACY_SCORE","mean"),
+        ED_RATE=("ED_VISIT_RATE_PER_1K","mean"),
+        CARE_GAP_PCT=("CARE_GAP_CLOSURE_PCT","mean"),
+        SCREENING_PCT=("PREVENTIVE_SCREENING_PCT","mean"),
+    ).reset_index().round(1).sort_values("SDOH_SCORE", ascending=False)
     if not detail.empty:
         def hl_risk(row):
-            t = row.get("SDOH_RISK_TIER", "")
+            t = row.get("SDOH_RISK_TIER","")
             if t == "High": return ["background-color:#FEE2E2"] * len(row)
             if t == "Medium": return ["background-color:#FEF9C3"] * len(row)
             return ["background-color:#DCFCE7"] * len(row)
         st.dataframe(detail.style.apply(hl_risk, axis=1), width="stretch", hide_index=True,
-                     column_config={"SDOH_SCORE": st.column_config.ProgressColumn("SDOH Score", min_value=0, max_value=100),
-                                    "CARE_GAP_PCT": st.column_config.ProgressColumn("Care Gap %", min_value=0, max_value=100),
-                                    "MEDIAN_INCOME": st.column_config.NumberColumn("Income", format="$%d"),
-                                    "HEALTH_LITERACY": st.column_config.ProgressColumn("Health Lit.", min_value=0, max_value=100)})
+                     column_config={
+                         "SDOH_SCORE": st.column_config.ProgressColumn("SDOH Score", min_value=0, max_value=100),
+                         "CARE_GAP_PCT": st.column_config.ProgressColumn("Care Gap %", min_value=0, max_value=100),
+                         "MEDIAN_INCOME": st.column_config.NumberColumn("Income", format="$%d"),
+                         "HEALTH_LITERACY": st.column_config.ProgressColumn("Health Lit.", min_value=0, max_value=100),
+                     })
 
     with st.expander(":material/code: View SQL"):
-        st.code(f"""SELECT COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER,
+        st.code("""SELECT COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER,
        AVG(COMPOSITE_SDOH_SCORE) AS sdoh_score, AVG(MEDIAN_INCOME) AS income,
        AVG(ED_VISIT_RATE_PER_1K) AS ed_rate, AVG(CARE_GAP_CLOSURE_PCT) AS care_gap
-FROM {SCHEMA}.SDOH_POPULATION WHERE METRIC_MONTH BETWEEN '{ds}' AND '{de}'
-GROUP BY COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER ORDER BY sdoh_score DESC;""", language="sql")
+FROM SDOH_POPULATION GROUP BY COMMUNITY_NAME, ZIP_CODE, SDOH_RISK_TIER
+ORDER BY sdoh_score DESC;""", language="sql")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # TAB 4 — AI & TECHNOLOGY ROI
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab4:
-    ai_kpi = run_query(f"""
-        WITH u AS (
-            SELECT
-                SUM(CASE WHEN AI_ASSIST_USED THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0) AS AI_RATE,
-                AVG(CASE WHEN AI_ASSIST_USED THEN AFTER_HOURS_MINUTES END) AS PAJAMA_AI,
-                AVG(CASE WHEN NOT AI_ASSIST_USED THEN AFTER_HOURS_MINUTES END) AS PAJAMA_NO_AI,
-                AVG(CASE WHEN AI_ASSIST_USED THEN NOTE_CLOSURE_AFTER_HOURS_MIN END) AS NOTE_AI,
-                AVG(CASE WHEN NOT AI_ASSIST_USED THEN NOTE_CLOSURE_AFTER_HOURS_MIN END) AS NOTE_NO_AI
-            FROM {SCHEMA}.EHR_DAILY_USAGE
-            WHERE USAGE_DATE >= '{ds}' AND USAGE_DATE <= '{de}' {fac_f} {dept_f}
-        )
-        SELECT ROUND(AI_RATE, 1) AS AI_PCT,
-               ROUND(PAJAMA_AI, 1) AS WITH_AI,
-               ROUND(PAJAMA_NO_AI, 1) AS WITHOUT_AI,
-               ROUND(PAJAMA_NO_AI - PAJAMA_AI, 1) AS DELTA,
-               ROUND(NOTE_NO_AI - NOTE_AI, 1) AS NOTE_DELTA
-        FROM u
-    """)
+    ai_used = ehr[ehr["AI_ASSIST_USED"]]
+    no_ai   = ehr[~ehr["AI_ASSIST_USED"]]
+    ai_pct     = round(ehr["AI_ASSIST_USED"].mean() * 100, 1) if not ehr.empty else 0
+    pajama_ai  = round(ai_used["AFTER_HOURS_MINUTES"].mean(), 1) if not ai_used.empty else 0
+    pajama_no  = round(no_ai["AFTER_HOURS_MINUTES"].mean(), 1) if not no_ai.empty else 0
+    delta_val  = round(pajama_no - pajama_ai, 1)
+    note_delta = round(no_ai["NOTE_CLOSURE_AFTER_HOURS_MIN"].mean() - ai_used["NOTE_CLOSURE_AFTER_HOURS_MIN"].mean(), 1) if not ai_used.empty else 0
 
-    train_pct = run_query(f"""
-        SELECT ROUND(SUM(CASE WHEN STATUS='Completed' THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0),1) AS PCT
-        FROM {SCHEMA}.TRAINING_LMS WHERE COURSE_CATEGORY IN ('AI/ML','EHR Optimization') {fac_f} {dept_f}
-    """)
-
-    tickets = run_query(f"""
-        SELECT COUNT(*) AS OPEN_TICKETS FROM {SCHEMA}.SUPPORT_TICKETS
-        WHERE STATUS IN ('Open','In Progress') {fac_f} {dept_f}
-    """)
+    ai_train_pct = round(
+        train[train["COURSE_CATEGORY"].isin(["AI/ML","EHR Optimization"])]["STATUS"].eq("Completed").mean() * 100, 1
+    ) if not train.empty else 0
+    open_tickets = len(tickets[tickets["STATUS"].isin(["Open","In Progress"])])
 
     c1,c2,c3,c4,c5 = st.columns(5)
-    with c1: kpi_card("DAX Adoption", safe(ai_kpi["AI_PCT"].iloc[0], ".1f", "%"), "+12.4%")
-    with c2: kpi_card("Time Saved /Day", safe(ai_kpi["DELTA"].iloc[0], ".1f", " min"), "per provider", "off")
-    with c3: kpi_card("With AI", safe(ai_kpi["WITH_AI"].iloc[0], ".1f", " min"), "after-hours", "off")
-    with c4: kpi_card("AI Training Done", safe(train_pct["PCT"].iloc[0], ".1f", "%"), "+8.2%")
-    with c5: kpi_card("Open IT Tickets", safe(tickets["OPEN_TICKETS"].iloc[0], ".0f"), delta_color="off")
+    with c1: kpi_card("DAX Adoption", f"{ai_pct}%", "+12.4%")
+    with c2: kpi_card("Time Saved /Day", f"{delta_val:.1f} min", "per provider", "off")
+    with c3: kpi_card("With AI", f"{pajama_ai:.1f} min", "after-hours", "off")
+    with c4: kpi_card("AI Training Done", f"{ai_train_pct:.1f}%", "+8.2%")
+    with c5: kpi_card("Open IT Tickets", str(open_tickets), delta_color="off")
 
     section_header("🤖", "AI Impact Analysis")
     co1, co2 = st.columns(2)
     with co1:
         st.markdown("**After-Hours Minutes: With vs Without DAX**")
-        by_dept = run_query(f"""
-            SELECT DEPARTMENT_NAME,
-                   ROUND(AVG(CASE WHEN AI_ASSIST_USED THEN AFTER_HOURS_MINUTES END), 1) AS WITH_AI,
-                   ROUND(AVG(CASE WHEN NOT AI_ASSIST_USED THEN AFTER_HOURS_MINUTES END), 1) AS WITHOUT_AI
-            FROM {SCHEMA}.EHR_DAILY_USAGE
-            WHERE USAGE_DATE >= '{ds}' AND USAGE_DATE <= '{de}' {fac_f} {dept_f}
-            GROUP BY DEPARTMENT_NAME ORDER BY WITHOUT_AI DESC
-        """)
+        by_dept = ehr.groupby("DEPARTMENT_NAME").agg(
+            WITH_AI=("AFTER_HOURS_MINUTES", lambda x: round(ehr.loc[x.index[ehr.loc[x.index,"AI_ASSIST_USED"]], "AFTER_HOURS_MINUTES"].mean(), 1)),
+            WITHOUT_AI=("AFTER_HOURS_MINUTES", lambda x: round(ehr.loc[x.index[~ehr.loc[x.index,"AI_ASSIST_USED"]], "AFTER_HOURS_MINUTES"].mean(), 1)),
+        ).reset_index().sort_values("WITHOUT_AI", ascending=False)
         if not by_dept.empty:
             fig = go.Figure()
-            fig.add_trace(go.Bar(name="Without AI", x=by_dept["DEPARTMENT_NAME"], y=by_dept["WITHOUT_AI"],
-                         marker_color="#94A3B8"))
-            fig.add_trace(go.Bar(name="With AI (DAX)", x=by_dept["DEPARTMENT_NAME"], y=by_dept["WITH_AI"],
-                         marker_color="#2563EB"))
-            chart_defaults(fig, 360)
+            fig.add_trace(go.Bar(name="Without AI", x=by_dept["DEPARTMENT_NAME"], y=by_dept["WITHOUT_AI"], marker_color="#94A3B8"))
+            fig.add_trace(go.Bar(name="With AI (DAX)", x=by_dept["DEPARTMENT_NAME"], y=by_dept["WITH_AI"], marker_color="#2563EB"))
+            fig = chart_defaults(fig, 360)
             fig.update_layout(barmode="group", xaxis_tickangle=-35, yaxis_title="After-Hours Min/Day")
             st.plotly_chart(fig, width="stretch")
 
     with co2:
         st.markdown("**DAX Adoption Rate Over Time**")
-        adoption_trend = run_query(f"""
-            SELECT DATE_TRUNC('month', USAGE_DATE) AS MO,
-                   ROUND(SUM(CASE WHEN AI_ASSIST_USED THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0), 1) AS AI_PCT
-            FROM {SCHEMA}.EHR_DAILY_USAGE
-            WHERE USAGE_DATE >= '{ds}' AND USAGE_DATE <= '{de}' {fac_f} {dept_f}
-            GROUP BY MO ORDER BY MO
-        """)
-        if not adoption_trend.empty:
+        at = ehr.copy()
+        at["USAGE_DATE"] = pd.to_datetime(at["USAGE_DATE"])
+        at["MO"] = at["USAGE_DATE"].dt.to_period("M").dt.to_timestamp()
+        at = at.groupby("MO").agg(AI_PCT=("AI_ASSIST_USED", lambda x: round(x.mean()*100, 1))).reset_index()
+        if not at.empty:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=adoption_trend["MO"], y=adoption_trend["AI_PCT"],
-                          fill="tozeroy", fillcolor="rgba(37,99,235,0.12)", line=dict(color="#2563EB", width=3),
+            fig.add_trace(go.Scatter(x=at["MO"], y=at["AI_PCT"], fill="tozeroy",
+                          fillcolor="rgba(37,99,235,0.12)", line=dict(color="#2563EB", width=3),
                           mode="lines+markers", marker=dict(size=6)))
             fig.add_shape(type="line", x0=AI_ROLLOUT_DATE, x1=AI_ROLLOUT_DATE, y0=0, y1=1, yref="paper",
                           line=dict(color="#059669", width=2, dash="dash"))
-            fig.add_annotation(x=AI_ROLLOUT_DATE, y=0.95, yref="paper", text="DAX Launch", showarrow=False,
-                               font=dict(color="#059669", size=10))
-            chart_defaults(fig, 360)
+            fig.add_annotation(x=AI_ROLLOUT_DATE, y=0.95, yref="paper", text="DAX Launch",
+                               showarrow=False, font=dict(color="#059669", size=10))
+            fig = chart_defaults(fig, 360)
             fig.update_layout(yaxis_title="DAX Adoption %")
             st.plotly_chart(fig, width="stretch")
 
     section_header("💡", "ROI Calculator")
-    delta_val = float(ai_kpi["DELTA"].iloc[0] or 0)
-    adoption_pct = float(ai_kpi["AI_PCT"].iloc[0] or 0)
-    providers_using = int(HEALTH_SYSTEM["providers"] * adoption_pct / 100)
+    providers_using = int(HEALTH_SYSTEM["providers"] * ai_pct / 100)
     annual_hours_saved = providers_using * delta_val * 250 / 60
     physician_value = annual_hours_saved * 180
 
-    rc1, rc2, rc3, rc4 = st.columns(4)
-    with rc1: kpi_card("Providers Using DAX", f"{providers_using}")
+    rc1,rc2,rc3,rc4 = st.columns(4)
+    with rc1: kpi_card("Providers Using DAX", str(providers_using))
     with rc2: kpi_card("Annual Hours Saved", f"{annual_hours_saved:,.0f} hrs")
     with rc3: kpi_card("Physician Time Value", f"${physician_value:,.0f}", "@ $180/hr", "off")
     with rc4: kpi_card("Investment ROI", f"{physician_value/2100000*100:.0f}%" if physician_value > 0 else "--", "on $2.1M investment")
 
-    section_header("🧠", "AI Executive Briefing", "Powered by Snowflake Cortex")
-    if OFFLINE_MODE:
-        st.info("AI Briefing requires live Snowflake connection.", icon=":material/cloud_off:")
-    else:
-        if st.button("Generate AI Executive Summary", type="primary", width="stretch"):
-            with st.spinner("Cortex AI is analyzing your data..."):
-                metrics = run_query(f"""
-                    WITH q AS (SELECT ROUND(AVG(READMISSION_RATE)*100,1) AS readmit, ROUND(AVG(HCAHPS_SCORE),0) AS hcahps,
-                               ROUND(AVG(DOC_COMPLETION_RATE)*100,1) AS doc_comp FROM {SCHEMA}.CLINICAL_OUTCOMES
-                               WHERE METRIC_MONTH >= DATEADD(month,-1,CURRENT_DATE())),
-                    p AS (SELECT ROUND(AVG(AFTER_HOURS_MINUTES),1) AS pajama,
-                               ROUND(SUM(CASE WHEN AI_ASSIST_USED THEN 1 ELSE 0 END)*100.0/NULLIF(COUNT(*),0),1) AS dax
-                          FROM {SCHEMA}.EHR_DAILY_USAGE WHERE USAGE_DATE >= DATEADD(month,-1,CURRENT_DATE())),
-                    c AS (SELECT ROUND(SUM(CASE WHEN CLAIM_STATUS='Denied' THEN 1 ELSE 0 END)*100.0/COUNT(*),1) AS denial_rate
-                          FROM {SCHEMA}.PAYER_CLAIMS WHERE CLAIM_DATE >= DATEADD(month,-1,CURRENT_DATE()))
-                    SELECT q.*, p.*, c.* FROM q, p, c
-                """)
-                if not metrics.empty:
-                    m = metrics.iloc[0]
-                    prompt = (f"You are the AI advisor for the CMIO at MetroHealth Alliance ({HEALTH_SYSTEM['hospitals']} hospitals, "
-                              f"{HEALTH_SYSTEM['providers']} providers, {HEALTH_SYSTEM['revenue']} revenue). "
-                              f"Current metrics: Readmission rate {m.get('READMIT','N/A')}%, HCAHPS {m.get('HCAHPS','N/A')}, "
-                              f"Doc completion {m.get('DOC_COMP','N/A')}%, Pajama time {m.get('PAJAMA','N/A')} min/day, "
-                              f"DAX adoption {m.get('DAX','N/A')}%, Claims denial rate {m.get('DENIAL_RATE','N/A')}%. "
-                              f"Write a structured executive summary: 1) System Performance (2-3 sentences), "
-                              f"2) Areas of Concern (bullets with specific recommendations), "
-                              f"3) Priority Actions for CMIO (3-5 items for next 30 days), "
-                              f"4) Board Talking Points (2-3 key messages). Be data-driven and action-oriented.")
-                    res = call_cortex(prompt)
-                    if not res.empty:
-                        st.markdown(
-                            f'<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-left:4px solid #2563EB;'
-                            f'padding:20px;border-radius:8px;line-height:1.8;font-size:13px;">'
-                            + res.iloc[0]["SUMMARY"].replace("\n", "<br>") + "</div>",
-                            unsafe_allow_html=True)
+    section_header("🧠", "AI Executive Briefing", "Pre-generated summary")
+    with st.expander("📋 View Executive Summary", expanded=True):
+        st.markdown(f"""
+<div style="background:#F8FAFC;border:1px solid #E2E8F0;border-left:4px solid #2563EB;
+     padding:20px;border-radius:8px;line-height:1.8;font-size:13px;">
+
+**1. System Performance Overview**<br>
+MetroHealth Alliance is performing at or above benchmark on key quality metrics, with a 30-day readmission rate of {readmit}%
+and an HCAHPS score of {int(hcahps)}/100. Documentation completion at {doc_comp}% reflects strong EHR adoption across most service lines.
+
+**2. Areas of Concern**<br>
+• CDS override rate of {cds_ovr}% — above the 50% safety threshold in Emergency Medicine and Hospitalist departments<br>
+• Self-Pay denial rate of ~28% is 3.5× the 8% target, representing approximately $2.1M in recoverable revenue<br>
+• Cedar Park and Industrial Corridor communities show SDOH composite scores above 75, driving above-average ED utilization<br>
+• Average pajama time of {pajama:.1f} min/day remains above the 45-minute threshold in 6 of 15 departments
+
+**3. Priority Actions for CMIO (Next 30 Days)**<br>
+1. Accelerate DAX rollout in Cardiology and Hospitalist Medicine — highest after-hours burden, lowest AI adoption<br>
+2. Launch targeted CDS alert review in Emergency Medicine — 64% override rate indicates alert fatigue<br>
+3. Partner with Revenue Cycle to address CO-16 and CO-4 denial codes — represent 38% of total denied revenue<br>
+4. Initiate SDOH care navigation program in Cedar Park (63107) and Industrial Corridor (63110)<br>
+5. Review Self-Pay billing workflow — denial rate significantly exceeds commercial payer benchmarks
+
+**4. Board Talking Points**<br>
+• DAX AI investment is generating measurable ROI: {providers_using} providers saving {delta_val:.1f} min/day = ~${physician_value:,.0f} in annualized physician time value<br>
+• HCAHPS trending up {'+1.4'} points — directly tied to improved documentation quality and reduced EHR burden<br>
+• SDOH data now integrated into clinical workflow, enabling proactive outreach to high-risk communities
+
+</div>
+""", unsafe_allow_html=True)
 
     with st.expander(":material/code: View SQL"):
-        st.code(f"""-- AI ROI: DAX vs non-DAX after-hours comparison
+        st.code("""-- AI ROI: DAX vs non-DAX after-hours comparison
 SELECT DEPARTMENT_NAME,
        AVG(CASE WHEN AI_ASSIST_USED THEN AFTER_HOURS_MINUTES END) AS with_ai,
        AVG(CASE WHEN NOT AI_ASSIST_USED THEN AFTER_HOURS_MINUTES END) AS without_ai
-FROM {SCHEMA}.EHR_DAILY_USAGE GROUP BY DEPARTMENT_NAME;""", language="sql")
+FROM EHR_DAILY_USAGE GROUP BY DEPARTMENT_NAME;""", language="sql")
 
 
 # ── Footer ───────────────────────────────────────────────────────────────────
 st.divider()
-fc1, fc2, fc3 = st.columns(3)
+fc1,fc2,fc3 = st.columns(3)
 with fc1:
     st.markdown("**Data Architecture**")
-    st.caption("11 tables • 65K+ rows • Epic + Workday + Claims + SDOH")
+    st.caption("11 tables • 65K+ rows • Synthetic data • Zero compute cost")
 with fc2:
     st.markdown("**Key CMIO Metrics**")
     st.caption("Quality • Claims • SDOH • AI ROI • Burnout")
